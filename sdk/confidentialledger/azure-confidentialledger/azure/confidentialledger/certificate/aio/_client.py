@@ -24,24 +24,16 @@ if TYPE_CHECKING:
 class ConfidentialLedgerCertificateClient(
     ConfidentialLedgerCertificateClientOperationsMixin
 ):  # pylint: disable=client-accepts-api-version-keyword
-    """The ConfidentialLedgerCertificateClient is used to retrieve the TLS certificate required for
-    connecting to a Confidential Ledger.
+    """ConfidentialLedgerCertificateClient.
 
-    :param certificate_endpoint: The certificate endpoint (or "Identity Service Endpoint" in the
-     Azure portal), for example https://identity.confidential-ledger.core.azure.com. Required.
-    :type certificate_endpoint: str
     :keyword api_version: Api Version. Default value is "2022-05-13". Note that overriding this
      default value may result in unsupported behavior.
     :paramtype api_version: str
     """
 
-    def __init__(  # pylint: disable=missing-client-constructor-parameter-credential
-        self, certificate_endpoint: str, **kwargs: Any
-    ) -> None:
-        _endpoint = "{certificateEndpoint}"
-        self._config = ConfidentialLedgerCertificateClientConfiguration(
-            certificate_endpoint=certificate_endpoint, **kwargs
-        )
+    def __init__(self, **kwargs: Any) -> None:  # pylint: disable=missing-client-constructor-parameter-credential
+        _endpoint = "{identityServiceUri}"
+        self._config = ConfidentialLedgerCertificateClientConfiguration(**kwargs)
         self._client = AsyncPipelineClient(base_url=_endpoint, config=self._config, **kwargs)
 
         self._serialize = Serializer()
@@ -67,13 +59,7 @@ class ConfidentialLedgerCertificateClient(
         """
 
         request_copy = deepcopy(request)
-        path_format_arguments = {
-            "certificateEndpoint": self._serialize.url(
-                "self._config.certificate_endpoint", self._config.certificate_endpoint, "str", skip_quote=True
-            ),
-        }
-
-        request_copy.url = self._client.format_url(request_copy.url, **path_format_arguments)
+        request_copy.url = self._client.format_url(request_copy.url)
         return self._client.send_request(request_copy, **kwargs)
 
     async def close(self) -> None:

@@ -20,22 +20,15 @@ class ConfidentialLedgerCertificateClientConfiguration(Configuration):  # pylint
     Note that all parameters used to create this instance are saved as instance
     attributes.
 
-    :param certificate_endpoint: The certificate endpoint (or "Identity Service Endpoint" in the
-     Azure portal), for example https://identity.confidential-ledger.core.azure.com. Required.
-    :type certificate_endpoint: str
     :keyword api_version: Api Version. Default value is "2022-05-13". Note that overriding this
      default value may result in unsupported behavior.
     :paramtype api_version: str
     """
 
-    def __init__(self, certificate_endpoint: str, **kwargs: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super(ConfidentialLedgerCertificateClientConfiguration, self).__init__(**kwargs)
         api_version = kwargs.pop("api_version", "2022-05-13")  # type: str
 
-        if certificate_endpoint is None:
-            raise ValueError("Parameter 'certificate_endpoint' must not be None.")
-
-        self.certificate_endpoint = certificate_endpoint
         self.api_version = api_version
         kwargs.setdefault("sdk_moniker", "confidentialledger-certificate/{}".format(VERSION))
         self._configure(**kwargs)

@@ -6,7 +6,7 @@
 # Changes may cause incorrect behavior and will be lost if the code is regenerated.
 # --------------------------------------------------------------------------
 
-from typing import Any
+from typing import Any, Optional
 
 from azure.core.configuration import Configuration
 from azure.core.pipeline import policies
@@ -20,22 +20,29 @@ class ConfidentialLedgerClientConfiguration(Configuration):  # pylint: disable=t
     Note that all parameters used to create this instance are saved as instance
     attributes.
 
-    :param ledger_endpoint: The Confidential Ledger URL, for example
-     https://contoso.confidentialledger.azure.com. Required.
-    :type ledger_endpoint: str
+    :param transaction_id: Identifies a write transaction. Required.
+    :type transaction_id: str
+    :param user_id: The user id, either an AAD object ID or certificate fingerprint. Required.
+    :type user_id: str
+    :param collection_id: The collection id. Default value is None.
+    :type collection_id: str
     :keyword api_version: Api Version. Default value is "2022-05-13". Note that overriding this
      default value may result in unsupported behavior.
     :paramtype api_version: str
     """
 
-    def __init__(self, ledger_endpoint: str, **kwargs: Any) -> None:
+    def __init__(self, transaction_id: str, user_id: str, collection_id: Optional[str] = None, **kwargs: Any) -> None:
         super(ConfidentialLedgerClientConfiguration, self).__init__(**kwargs)
         api_version = kwargs.pop("api_version", "2022-05-13")  # type: str
 
-        if ledger_endpoint is None:
-            raise ValueError("Parameter 'ledger_endpoint' must not be None.")
+        if transaction_id is None:
+            raise ValueError("Parameter 'transaction_id' must not be None.")
+        if user_id is None:
+            raise ValueError("Parameter 'user_id' must not be None.")
 
-        self.ledger_endpoint = ledger_endpoint
+        self.transaction_id = transaction_id
+        self.user_id = user_id
+        self.collection_id = collection_id
         self.api_version = api_version
         kwargs.setdefault("sdk_moniker", "confidentialledger/{}".format(VERSION))
         self._configure(**kwargs)
