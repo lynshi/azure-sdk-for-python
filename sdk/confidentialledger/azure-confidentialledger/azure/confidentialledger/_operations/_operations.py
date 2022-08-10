@@ -205,7 +205,7 @@ def build_delete_user_request(user_id: str, *, api_version: str = "2022-05-13", 
     # Construct URL
     _url = "/app/users/{userId}"
     path_format_arguments = {
-        "userId": _SERIALIZER.url("user_id", user_id, "str"),
+        "userId": user_id,
     }
 
     _url = _format_url_section(_url, **path_format_arguments)
@@ -222,7 +222,7 @@ def build_get_user_request(user_id: str, *, api_version: str = "2022-05-13", **k
     # Construct URL
     _url = "/app/users/{userId}"
     path_format_arguments = {
-        "userId": _SERIALIZER.url("user_id", user_id, "str"),
+        "userId": user_id,
     }
 
     _url = _format_url_section(_url, **path_format_arguments)
@@ -241,7 +241,7 @@ def build_create_or_update_user_request(user_id: str, *, api_version: str = "202
     # Construct URL
     _url = "/app/users/{userId}"
     path_format_arguments = {
-        "userId": _SERIALIZER.url("user_id", user_id, "str"),
+        "userId": user_id,
     }
 
     _url = _format_url_section(_url, **path_format_arguments)
