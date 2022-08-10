@@ -9,8 +9,9 @@
 # # --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 import sys
-from typing import Any, Callable, Dict, Optional, TypeVar, cast
+from typing import Any, AsyncIterable, Callable, Dict, Optional, TypeVar, cast
 
+from azure.core.async_paging import AsyncItemPaged, AsyncList
 from azure.core.exceptions import (
     ClientAuthenticationError,
     HttpResponseError,
@@ -21,6 +22,7 @@ from azure.core.exceptions import (
 from azure.core.pipeline import PipelineResponse
 from azure.core.pipeline.transport import AsyncHttpResponse
 from azure.core.rest import HttpRequest
+from azure.core.tracing.decorator import distributed_trace
 from azure.core.tracing.decorator_async import distributed_trace_async
 from azure.core.utils import case_insensitive_dict
 
@@ -105,14 +107,14 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
 
         return cast(JSON, deserialized)
 
-    @distributed_trace_async
-    async def list_consortium_members(self, *, api_version: str = "2022-05-13", **kwargs: Any) -> JSON:
+    @distributed_trace
+    def list_consortium_members(self, *, api_version: str = "2022-05-13", **kwargs: Any) -> AsyncIterable[JSON]:
         """Consortium members can manage the Confidential Ledger.
 
         :keyword api_version: The API version to use for this operation. Required.
         :paramtype api_version: str
-        :return: JSON object
-        :rtype: JSON
+        :return: An iterator like instance of JSON object
+        :rtype: ~azure.core.async_paging.AsyncItemPaged[JSON]
         :raises ~azure.core.exceptions.HttpResponseError:
 
         Example:
@@ -120,51 +122,57 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
 
                 # response body for status code(s): 200
                 response == {
-                    "members": [
-                        {
-                            "certificate": "str",  # PEM-encoded certificate associated
-                              with the member. Required.
-                            "id": "str"  # Identifier assigned to the member. Required.
-                        }
-                    ],
-                    "nextLink": "str"  # Optional. URI from which to retrieve the next page of
-                      results.
+                    "certificate": "str",  # PEM-encoded certificate associated with the member.
+                      Required.
+                    "id": "str"  # Identifier assigned to the member. Required.
                 }
         """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
         _headers = kwargs.pop("headers", {}) or {}
         _params = kwargs.pop("params", {}) or {}
 
         cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
-        request = build_list_consortium_members_request(
-            api_version=api_version,
-            headers=_headers,
-            params=_params,
-        )
-        request.url = self._client.format_url(request.url)  # type: ignore
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
 
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
+        def prepare_request(next_link=None):
+            if not next_link:
 
-        response = pipeline_response.http_response
+                request = build_list_consortium_members_request(
+                    api_version=api_version,
+                    headers=_headers,
+                    params=_params,
+                )
+                request.url = self._client.format_url(request.url)  # type: ignore
 
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
+            else:
+                request = HttpRequest("GET", next_link)
+                request.url = self._client.format_url(request.url)  # type: ignore
 
-        if response.content:
-            deserialized = response.json()
-        else:
-            deserialized = None
+            return request
 
-        if cls:
-            return cls(pipeline_response, cast(JSON, deserialized), {})
+        async def extract_data(pipeline_response):
+            deserialized = pipeline_response.http_response.json()
+            list_of_elem = deserialized["members"]
+            if cls:
+                list_of_elem = cls(list_of_elem)
+            return deserialized.get("nextLink", None), AsyncList(list_of_elem)
 
-        return cast(JSON, deserialized)
+        async def get_next(next_link=None):
+            request = prepare_request(next_link)
+
+            pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+                request, stream=False, **kwargs
+            )
+            response = pipeline_response.http_response
+
+            if response.status_code not in [200]:
+                map_error(status_code=response.status_code, response=response, error_map=error_map)
+                raise HttpResponseError(response=response)
+
+            return pipeline_response
+
+        return AsyncItemPaged(get_next, extract_data)
 
     @distributed_trace_async
     async def get_enclave_quotes(self, *, api_version: str = "2022-05-13", **kwargs: Any) -> JSON:
@@ -232,14 +240,14 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
 
         return cast(JSON, deserialized)
 
-    @distributed_trace_async
-    async def list_collections(self, *, api_version: str = "2022-05-13", **kwargs: Any) -> JSON:
+    @distributed_trace
+    def list_collections(self, *, api_version: str = "2022-05-13", **kwargs: Any) -> AsyncIterable[JSON]:
         """Collection ids are user-created collections of ledger entries.
 
         :keyword api_version: The API version to use for this operation. Required.
         :paramtype api_version: str
-        :return: JSON object
-        :rtype: JSON
+        :return: An iterator like instance of JSON object
+        :rtype: ~azure.core.async_paging.AsyncItemPaged[JSON]
         :raises ~azure.core.exceptions.HttpResponseError:
 
         Example:
@@ -247,60 +255,66 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
 
                 # response body for status code(s): 200
                 response == {
-                    "collections": [
-                        {
-                            "collectionId": "str"  # Id of the collection. Required.
-                        }
-                    ],
-                    "nextLink": "str"  # Optional. URI from which to retrieve the next page of
-                      results.
+                    "collectionId": "str"  # Id of the collection. Required.
                 }
         """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
         _headers = kwargs.pop("headers", {}) or {}
         _params = kwargs.pop("params", {}) or {}
 
         cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
-        request = build_list_collections_request(
-            api_version=api_version,
-            headers=_headers,
-            params=_params,
-        )
-        request.url = self._client.format_url(request.url)  # type: ignore
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
 
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
+        def prepare_request(next_link=None):
+            if not next_link:
 
-        response = pipeline_response.http_response
+                request = build_list_collections_request(
+                    api_version=api_version,
+                    headers=_headers,
+                    params=_params,
+                )
+                request.url = self._client.format_url(request.url)  # type: ignore
 
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
+            else:
+                request = HttpRequest("GET", next_link)
+                request.url = self._client.format_url(request.url)  # type: ignore
 
-        if response.content:
-            deserialized = response.json()
-        else:
-            deserialized = None
+            return request
 
-        if cls:
-            return cls(pipeline_response, cast(JSON, deserialized), {})
+        async def extract_data(pipeline_response):
+            deserialized = pipeline_response.http_response.json()
+            list_of_elem = deserialized["collections"]
+            if cls:
+                list_of_elem = cls(list_of_elem)
+            return deserialized.get("nextLink", None), AsyncList(list_of_elem)
 
-        return cast(JSON, deserialized)
+        async def get_next(next_link=None):
+            request = prepare_request(next_link)
 
-    @distributed_trace_async
-    async def list_ledger_entries(
+            pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+                request, stream=False, **kwargs
+            )
+            response = pipeline_response.http_response
+
+            if response.status_code not in [200]:
+                map_error(status_code=response.status_code, response=response, error_map=error_map)
+                raise HttpResponseError(response=response)
+
+            return pipeline_response
+
+        return AsyncItemPaged(get_next, extract_data)
+
+    @distributed_trace
+    def list_ledger_entries(
         self,
         *,
-        api_version: str,
+        api_version: str = "2022-05-13",
         collection_id: Optional[str] = None,
         from_transaction_id: Optional[str] = None,
         to_transaction_id: Optional[str] = None,
         **kwargs: Any
-    ) -> JSON:
+    ) -> AsyncIterable[JSON]:
         """A collection id may optionally be specified. Only entries in the specified (or default)
         collection will be returned.
 
@@ -313,8 +327,8 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
         :paramtype from_transaction_id: str
         :keyword to_transaction_id: Specify the last transaction ID in a range. Default value is None.
         :paramtype to_transaction_id: str
-        :return: JSON object
-        :rtype: JSON
+        :return: An iterator like instance of JSON object
+        :rtype: ~azure.core.async_paging.AsyncItemPaged[JSON]
         :raises ~azure.core.exceptions.HttpResponseError:
 
         Example:
@@ -322,58 +336,63 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
 
                 # response body for status code(s): 200
                 response == {
-                    "entries": [
-                        {
-                            "contents": "str",  # Contents of the ledger entry. Required.
-                            "collectionId": "str",  # Optional. Id of the collection
-                              containing the entry.
-                            "transactionId": "str"  # Optional. A unique identifier for
-                              the state of the ledger. If returned as part of a LedgerEntry, it
-                              indicates the state from which the entry was read.
-                        }
-                    ],
-                    "state": "str",  # Required. Known values are: "Loading" and "Ready".
-                    "nextLink": "str"  # Optional. URI from which to retrieve the next page of
-                      results.
+                    "contents": "str",  # Contents of the ledger entry. Required.
+                    "collectionId": "str",  # Optional. Id of the collection containing the
+                      entry.
+                    "transactionId": "str"  # Optional. A unique identifier for the state of the
+                      ledger. If returned as part of a LedgerEntry, it indicates the state from which
+                      the entry was read.
                 }
         """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
         _headers = kwargs.pop("headers", {}) or {}
         _params = kwargs.pop("params", {}) or {}
 
         cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
-        request = build_list_ledger_entries_request(
-            api_version=api_version,
-            collection_id=collection_id,
-            from_transaction_id=from_transaction_id,
-            to_transaction_id=to_transaction_id,
-            headers=_headers,
-            params=_params,
-        )
-        request.url = self._client.format_url(request.url)  # type: ignore
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
 
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
+        def prepare_request(next_link=None):
+            if not next_link:
 
-        response = pipeline_response.http_response
+                request = build_list_ledger_entries_request(
+                    api_version=api_version,
+                    collection_id=collection_id,
+                    from_transaction_id=from_transaction_id,
+                    to_transaction_id=to_transaction_id,
+                    headers=_headers,
+                    params=_params,
+                )
+                request.url = self._client.format_url(request.url)  # type: ignore
 
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
+            else:
+                request = HttpRequest("GET", next_link)
+                request.url = self._client.format_url(request.url)  # type: ignore
 
-        if response.content:
-            deserialized = response.json()
-        else:
-            deserialized = None
+            return request
 
-        if cls:
-            return cls(pipeline_response, cast(JSON, deserialized), {})
+        async def extract_data(pipeline_response):
+            deserialized = pipeline_response.http_response.json()
+            list_of_elem = deserialized["entries"]
+            if cls:
+                list_of_elem = cls(list_of_elem)
+            return deserialized.get("nextLink", None), AsyncList(list_of_elem)
 
-        return cast(JSON, deserialized)
+        async def get_next(next_link=None):
+            request = prepare_request(next_link)
+
+            pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+                request, stream=False, **kwargs
+            )
+            response = pipeline_response.http_response
+
+            if response.status_code not in [200]:
+                map_error(status_code=response.status_code, response=response, error_map=error_map)
+                raise HttpResponseError(response=response)
+
+            return pipeline_response
+
+        return AsyncItemPaged(get_next, extract_data)
 
     @distributed_trace_async
     async def create_ledger_entry(
