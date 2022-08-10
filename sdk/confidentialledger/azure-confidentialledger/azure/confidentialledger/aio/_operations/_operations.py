@@ -7,8 +7,10 @@
 # Changes may cause incorrect behavior and will be lost if the code is regenerated.
 # --------------------------------------------------------------------------
 import sys
-from typing import Any, Callable, Dict, IO, Optional, TypeVar, Union, cast, overload
+from typing import Any, AsyncIterable, Callable, Dict, IO, Optional, TypeVar, Union, cast, overload
+from urllib.parse import parse_qs, urljoin, urlparse
 
+from azure.core.async_paging import AsyncItemPaged, AsyncList
 from azure.core.exceptions import (
     ClientAuthenticationError,
     HttpResponseError,
@@ -19,13 +21,14 @@ from azure.core.exceptions import (
 from azure.core.pipeline import PipelineResponse
 from azure.core.pipeline.transport import AsyncHttpResponse
 from azure.core.rest import HttpRequest
+from azure.core.tracing.decorator import distributed_trace
 from azure.core.tracing.decorator_async import distributed_trace_async
 from azure.core.utils import case_insensitive_dict
 
 from ..._operations._operations import (
+    build_create_ledger_entry_request,
     build_create_or_update_user_request,
     build_delete_user_request,
-    build_get_consortium_members_request,
     build_get_constitution_request,
     build_get_current_ledger_entry_request,
     build_get_enclave_quotes_request,
@@ -34,7 +37,8 @@ from ..._operations._operations import (
     build_get_transaction_status_request,
     build_get_user_request,
     build_list_collections_request,
-    build_post_ledger_entry_request,
+    build_list_consortium_members_request,
+    build_list_ledger_entries_request,
 )
 from .._vendor import MixinABC
 
@@ -49,13 +53,11 @@ ClsType = Optional[Callable[[PipelineResponse[HttpRequest, AsyncHttpResponse], T
 
 class ConfidentialLedgerClientOperationsMixin(MixinABC):
     @distributed_trace_async
-    async def list_collections(self, ledger_uri: str, **kwargs: Any) -> JSON:
-        """Retrieves a list of collection ids present in the Confidential Ledger.
+    async def get_constitution(self, **kwargs: Any) -> JSON:
+        """Gets the constitution used for governance.
 
-        Collection ids are user-created collections of ledger entries.
+        The constitution is a script that assesses and applies proposals from consortium members.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
         :return: JSON object
         :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
@@ -65,11 +67,8 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
 
                 # response body for status code(s): 200
                 response == {
-                    "items": [
-                        {
-                            "collectionId": "str"  # Required.
-                        }
-                    ]
+                    "digest": "str",  # SHA256 digest of the constitution script. Required.
+                    "script": "str"  # Contents of the constitution. Required.
                 }
         """
         error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
@@ -80,13 +79,575 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
 
         cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
-        request = build_list_collections_request(
+        request = build_get_constitution_request(
             api_version=self._config.api_version,
             headers=_headers,
             params=_params,
         )
         path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
+        }
+        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+            request, stream=False, **kwargs
+        )
+
+        response = pipeline_response.http_response
+
+        if response.status_code not in [200]:
+            map_error(status_code=response.status_code, response=response, error_map=error_map)
+            raise HttpResponseError(response=response)
+
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
+        if cls:
+            return cls(pipeline_response, cast(JSON, deserialized), {})
+
+        return cast(JSON, deserialized)
+
+    @distributed_trace
+    def list_consortium_members(self, **kwargs: Any) -> AsyncIterable[JSON]:
+        """Lists the consortium members.
+
+        Consortium members can manage the Confidential Ledger.
+
+        :return: An iterator like instance of JSON object
+        :rtype: ~azure.core.async_paging.AsyncItemPaged[JSON]
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "certificate": "str",  # PEM-encoded certificate associated with the member.
+                      Required.
+                    "id": "str"  # Identifier assigned to the member. Required.
+                }
+        """
+        _headers = kwargs.pop("headers", {}) or {}
+        _params = kwargs.pop("params", {}) or {}
+
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
+
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
+
+        def prepare_request(next_link=None):
+            if not next_link:
+
+                request = build_list_consortium_members_request(
+                    api_version=self._config.api_version,
+                    headers=_headers,
+                    params=_params,
+                )
+                path_format_arguments = {
+                    "ledgerEndpoint": self._serialize.url(
+                        "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+                    ),
+                }
+                request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+            else:
+                # make call to next link with the client's api-version
+                _parsed_next_link = urlparse(next_link)
+                _next_request_params = case_insensitive_dict(parse_qs(_parsed_next_link.query))
+                _next_request_params["api-version"] = self._config.api_version
+                request = HttpRequest("GET", urljoin(next_link, _parsed_next_link.path), params=_next_request_params)
+                path_format_arguments = {
+                    "ledgerEndpoint": self._serialize.url(
+                        "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+                    ),
+                }
+                request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+            return request
+
+        async def extract_data(pipeline_response):
+            deserialized = pipeline_response.http_response.json()
+            list_of_elem = deserialized["members"]
+            if cls:
+                list_of_elem = cls(list_of_elem)
+            return deserialized.get("nextLink", None), AsyncList(list_of_elem)
+
+        async def get_next(next_link=None):
+            request = prepare_request(next_link)
+
+            pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+                request, stream=False, **kwargs
+            )
+            response = pipeline_response.http_response
+
+            if response.status_code not in [200]:
+                map_error(status_code=response.status_code, response=response, error_map=error_map)
+                raise HttpResponseError(response=response)
+
+            return pipeline_response
+
+        return AsyncItemPaged(get_next, extract_data)
+
+    @distributed_trace_async
+    async def get_enclave_quotes(self, **kwargs: Any) -> JSON:
+        """Gets quotes for all nodes of the Confidential Ledger.
+
+        A quote is an SGX enclave measurement that can be used to verify the validity of a node and its
+        enclave.
+
+        :return: JSON object
+        :rtype: JSON
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "currentNodeId": "str",  # Id of the Confidential Ledger node responding to
+                      the request. Required.
+                    "enclaveQuotes": {
+                        "str": {
+                            "mrenclave": "str",  # Optional. MRENCLAVE value of the code
+                              running in the enclave.
+                            "nodeId": "str",  # ID assigned to this node. Required.
+                            "quoteVersion": "str",  # Version of the quote presented.
+                              Required.
+                            "raw": "str"  # Raw SGX quote, parsable by tools like Open
+                              Enclave's oeverify. Required.
+                        }
+                    }
+                }
+        """
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
+
+        _headers = kwargs.pop("headers", {}) or {}
+        _params = kwargs.pop("params", {}) or {}
+
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
+
+        request = build_get_enclave_quotes_request(
+            api_version=self._config.api_version,
+            headers=_headers,
+            params=_params,
+        )
+        path_format_arguments = {
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
+        }
+        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+            request, stream=False, **kwargs
+        )
+
+        response = pipeline_response.http_response
+
+        if response.status_code not in [200]:
+            map_error(status_code=response.status_code, response=response, error_map=error_map)
+            raise HttpResponseError(response=response)
+
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
+        if cls:
+            return cls(pipeline_response, cast(JSON, deserialized), {})
+
+        return cast(JSON, deserialized)
+
+    @distributed_trace
+    def list_collections(self, **kwargs: Any) -> AsyncIterable[JSON]:
+        """Retrieves a list of collection ids present in the Confidential Ledger.
+
+        Collection ids are user-created collections of ledger entries.
+
+        :return: An iterator like instance of JSON object
+        :rtype: ~azure.core.async_paging.AsyncItemPaged[JSON]
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "collectionId": "str"  # Required.
+                }
+        """
+        _headers = kwargs.pop("headers", {}) or {}
+        _params = kwargs.pop("params", {}) or {}
+
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
+
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
+
+        def prepare_request(next_link=None):
+            if not next_link:
+
+                request = build_list_collections_request(
+                    api_version=self._config.api_version,
+                    headers=_headers,
+                    params=_params,
+                )
+                path_format_arguments = {
+                    "ledgerEndpoint": self._serialize.url(
+                        "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+                    ),
+                }
+                request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+            else:
+                # make call to next link with the client's api-version
+                _parsed_next_link = urlparse(next_link)
+                _next_request_params = case_insensitive_dict(parse_qs(_parsed_next_link.query))
+                _next_request_params["api-version"] = self._config.api_version
+                request = HttpRequest("GET", urljoin(next_link, _parsed_next_link.path), params=_next_request_params)
+                path_format_arguments = {
+                    "ledgerEndpoint": self._serialize.url(
+                        "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+                    ),
+                }
+                request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+            return request
+
+        async def extract_data(pipeline_response):
+            deserialized = pipeline_response.http_response.json()
+            list_of_elem = deserialized["collections"]
+            if cls:
+                list_of_elem = cls(list_of_elem)
+            return deserialized.get("nextLink", None), AsyncList(list_of_elem)
+
+        async def get_next(next_link=None):
+            request = prepare_request(next_link)
+
+            pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+                request, stream=False, **kwargs
+            )
+            response = pipeline_response.http_response
+
+            if response.status_code not in [200]:
+                map_error(status_code=response.status_code, response=response, error_map=error_map)
+                raise HttpResponseError(response=response)
+
+            return pipeline_response
+
+        return AsyncItemPaged(get_next, extract_data)
+
+    @distributed_trace
+    def list_ledger_entries(
+        self,
+        *,
+        collection_id: Optional[str] = None,
+        from_transaction_id: Optional[str] = None,
+        to_transaction_id: Optional[str] = None,
+        **kwargs: Any
+    ) -> AsyncIterable[JSON]:
+        """Gets ledger entries from a collection corresponding to a range.
+
+        A collection id may optionally be specified. Only entries in the specified (or default)
+        collection will be returned.
+
+        :keyword collection_id: The collection id. Default value is None.
+        :paramtype collection_id: str
+        :keyword from_transaction_id: Specify the first transaction ID in a range. Default value is
+         None.
+        :paramtype from_transaction_id: str
+        :keyword to_transaction_id: Specify the last transaction ID in a range. Default value is None.
+        :paramtype to_transaction_id: str
+        :return: An iterator like instance of JSON object
+        :rtype: ~azure.core.async_paging.AsyncItemPaged[JSON]
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "collectionId": "str",  # Optional.
+                    "contents": "str",  # Contents of the ledger entry. Required.
+                    "transactionId": "str"  # Optional. A unique identifier for the state of the
+                      ledger. If returned as part of a LedgerEntry, it indicates the state from which
+                      the entry was read.
+                }
+        """
+        _headers = kwargs.pop("headers", {}) or {}
+        _params = kwargs.pop("params", {}) or {}
+
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
+
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
+
+        def prepare_request(next_link=None):
+            if not next_link:
+
+                request = build_list_ledger_entries_request(
+                    collection_id=collection_id,
+                    from_transaction_id=from_transaction_id,
+                    to_transaction_id=to_transaction_id,
+                    api_version=self._config.api_version,
+                    headers=_headers,
+                    params=_params,
+                )
+                path_format_arguments = {
+                    "ledgerEndpoint": self._serialize.url(
+                        "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+                    ),
+                }
+                request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+            else:
+                # make call to next link with the client's api-version
+                _parsed_next_link = urlparse(next_link)
+                _next_request_params = case_insensitive_dict(parse_qs(_parsed_next_link.query))
+                _next_request_params["api-version"] = self._config.api_version
+                request = HttpRequest("GET", urljoin(next_link, _parsed_next_link.path), params=_next_request_params)
+                path_format_arguments = {
+                    "ledgerEndpoint": self._serialize.url(
+                        "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+                    ),
+                }
+                request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+            return request
+
+        async def extract_data(pipeline_response):
+            deserialized = pipeline_response.http_response.json()
+            list_of_elem = deserialized["entries"]
+            if cls:
+                list_of_elem = cls(list_of_elem)
+            return deserialized.get("nextLink", None), AsyncList(list_of_elem)
+
+        async def get_next(next_link=None):
+            request = prepare_request(next_link)
+
+            pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+                request, stream=False, **kwargs
+            )
+            response = pipeline_response.http_response
+
+            if response.status_code not in [200]:
+                map_error(status_code=response.status_code, response=response, error_map=error_map)
+                raise HttpResponseError(response=response)
+
+            return pipeline_response
+
+        return AsyncItemPaged(get_next, extract_data)
+
+    @overload
+    async def create_ledger_entry(
+        self, entry: JSON, *, collection_id: Optional[str] = None, content_type: str = "application/json", **kwargs: Any
+    ) -> JSON:
+        """Writes a ledger entry.
+
+        A collection id may optionally be specified.
+
+        :param entry: Ledger entry. Required.
+        :type entry: JSON
+        :keyword collection_id: The collection id. Default value is None.
+        :paramtype collection_id: str
+        :keyword content_type: Body Parameter content-type. Content type parameter for JSON body.
+         Default value is "application/json".
+        :paramtype content_type: str
+        :return: JSON object
+        :rtype: JSON
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # JSON input template you can fill out and use as your body input.
+                entry = {
+                    "collectionId": "str",  # Optional.
+                    "contents": "str",  # Contents of the ledger entry. Required.
+                    "transactionId": "str"  # Optional. A unique identifier for the state of the
+                      ledger. If returned as part of a LedgerEntry, it indicates the state from which
+                      the entry was read.
+                }
+
+                # response body for status code(s): 200
+                response == {
+                    "collectionId": "str"  # Required.
+                }
+        """
+
+    @overload
+    async def create_ledger_entry(
+        self, entry: IO, *, collection_id: Optional[str] = None, content_type: str = "application/json", **kwargs: Any
+    ) -> JSON:
+        """Writes a ledger entry.
+
+        A collection id may optionally be specified.
+
+        :param entry: Ledger entry. Required.
+        :type entry: IO
+        :keyword collection_id: The collection id. Default value is None.
+        :paramtype collection_id: str
+        :keyword content_type: Body Parameter content-type. Content type parameter for binary body.
+         Default value is "application/json".
+        :paramtype content_type: str
+        :return: JSON object
+        :rtype: JSON
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "collectionId": "str"  # Required.
+                }
+        """
+
+    @distributed_trace_async
+    async def create_ledger_entry(
+        self, entry: Union[JSON, IO], *, collection_id: Optional[str] = None, **kwargs: Any
+    ) -> JSON:
+        """Writes a ledger entry.
+
+        A collection id may optionally be specified.
+
+        :param entry: Ledger entry. Is either a model type or a IO type. Required.
+        :type entry: JSON or IO
+        :keyword collection_id: The collection id. Default value is None.
+        :paramtype collection_id: str
+        :keyword content_type: Body Parameter content-type. Known values are: 'application/json'.
+         Default value is None.
+        :paramtype content_type: str
+        :return: JSON object
+        :rtype: JSON
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "collectionId": "str"  # Required.
+                }
+        """
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
+
+        _headers = case_insensitive_dict(kwargs.pop("headers", {}) or {})
+        _params = kwargs.pop("params", {}) or {}
+
+        content_type = kwargs.pop("content_type", _headers.pop("Content-Type", None))  # type: Optional[str]
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
+
+        content_type = content_type or "application/json"
+        _json = None
+        _content = None
+        if isinstance(entry, (IO, bytes)):
+            _content = entry
+        else:
+            _json = entry
+
+        request = build_create_ledger_entry_request(
+            collection_id=collection_id,
+            content_type=content_type,
+            api_version=self._config.api_version,
+            json=_json,
+            content=_content,
+            headers=_headers,
+            params=_params,
+        )
+        path_format_arguments = {
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
+        }
+        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
+
+        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
+            request, stream=False, **kwargs
+        )
+
+        response = pipeline_response.http_response
+
+        if response.status_code not in [200]:
+            map_error(status_code=response.status_code, response=response, error_map=error_map)
+            raise HttpResponseError(response=response)
+
+        response_headers = {}
+        response_headers["x-ms-ccf-transaction-id"] = self._deserialize(
+            "str", response.headers.get("x-ms-ccf-transaction-id")
+        )
+
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
+        if cls:
+            return cls(pipeline_response, cast(JSON, deserialized), response_headers)
+
+        return cast(JSON, deserialized)
+
+    @distributed_trace_async
+    async def get_ledger_entry(
+        self, transaction_id: str, *, collection_id: Optional[str] = None, **kwargs: Any
+    ) -> JSON:
+        """Gets the ledger entry at the specified transaction id. A collection id may optionally be
+        specified to indicate the collection from which to fetch the value.
+
+        To return older ledger entries, the relevant sections of the ledger must be read from disk and
+        validated. To prevent blocking within the enclave, the response will indicate whether the entry
+        is ready and part of the response, or if the loading is still ongoing.
+
+        :param transaction_id: Identifies a write transaction. Required.
+        :type transaction_id: str
+        :keyword collection_id: The collection id. Default value is None.
+        :paramtype collection_id: str
+        :return: JSON object
+        :rtype: JSON
+        :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "entry": {
+                        "collectionId": "str",  # Optional. The ledger entry found as a
+                          result of the query. This is only available if the query is in Ready state.
+                        "contents": "str",  # Contents of the ledger entry. Required.
+                        "transactionId": "str"  # Optional. A unique identifier for the state
+                          of the ledger. If returned as part of a LedgerEntry, it indicates the state
+                          from which the entry was read.
+                    },
+                    "state": "str"  # State of a ledger query. Required. Known values are:
+                      "Loading" and "Ready".
+                }
+        """
+        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
+        error_map.update(kwargs.pop("error_map", {}) or {})
+
+        _headers = kwargs.pop("headers", {}) or {}
+        _params = kwargs.pop("params", {}) or {}
+
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
+
+        request = build_get_ledger_entry_request(
+            transaction_id=transaction_id,
+            collection_id=collection_id,
+            api_version=self._config.api_version,
+            headers=_headers,
+            params=_params,
+        )
+        path_format_arguments = {
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
         }
         request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
 
@@ -111,336 +672,68 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
         return cast(JSON, deserialized)
 
     @distributed_trace_async
-    async def get_enclave_quotes(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
-        """Gets quotes for all nodes of the Confidential Ledger.
+    async def get_receipt(self, transaction_id: str, **kwargs: Any) -> JSON:
+        """Gets a receipt certifying ledger contents at a particular transaction id.
 
-        A quote is an SGX enclave measurement that can be used to verify the validity of a node and its
-        enclave.
+        Gets a receipt certifying ledger contents at a particular transaction id.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
-        :raises ~azure.core.exceptions.HttpResponseError:
-        """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
-        _headers = kwargs.pop("headers", {}) or {}
-        _params = kwargs.pop("params", {}) or {}
-
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
-
-        request = build_get_enclave_quotes_request(
-            api_version=self._config.api_version,
-            headers=_headers,
-            params=_params,
-        )
-        path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
-        }
-        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
-
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
-
-        response = pipeline_response.http_response
-
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
-
-        if cls:
-            return cls(pipeline_response, None, {})
-
-    @distributed_trace_async
-    async def get_constitution(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
-        """Gets the constitution used for governance.
-
-        The constitution is a script that assesses and applies proposals from consortium members.
-
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
-        :raises ~azure.core.exceptions.HttpResponseError:
-        """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
-        _headers = kwargs.pop("headers", {}) or {}
-        _params = kwargs.pop("params", {}) or {}
-
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
-
-        request = build_get_constitution_request(
-            api_version=self._config.api_version,
-            headers=_headers,
-            params=_params,
-        )
-        path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
-        }
-        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
-
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
-
-        response = pipeline_response.http_response
-
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
-
-        if cls:
-            return cls(pipeline_response, None, {})
-
-    @distributed_trace_async
-    async def get_consortium_members(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
-        """Gets the consortium members.
-
-        Consortium members can manage the Confidential Ledger.
-
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
-        :raises ~azure.core.exceptions.HttpResponseError:
-        """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
-        _headers = kwargs.pop("headers", {}) or {}
-        _params = kwargs.pop("params", {}) or {}
-
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
-
-        request = build_get_consortium_members_request(
-            api_version=self._config.api_version,
-            headers=_headers,
-            params=_params,
-        )
-        path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
-        }
-        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
-
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
-
-        response = pipeline_response.http_response
-
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
-
-        if cls:
-            return cls(pipeline_response, None, {})
-
-    @overload
-    async def post_ledger_entry(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, body: Optional[JSON] = None, *, content_type: str = "application/json", **kwargs: Any
-    ) -> None:
-        """Writes a ledger entry.
-
-        A collection id may optionally be specified.
-
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :param body: Default value is None.
-        :type body: JSON
-        :keyword content_type: Body Parameter content-type. Content type parameter for JSON body.
-         Default value is "application/json".
-        :paramtype content_type: str
-        :return: None
-        :rtype: None
+        :param transaction_id: Identifies a write transaction. Required.
+        :type transaction_id: str
+        :return: JSON object
+        :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
 
         Example:
             .. code-block:: python
 
-                # JSON input template you can fill out and use as your body input.
-                body = {
-                    "collectionId": "str",  # Required.
-                    "contents": "str",  # Required.
-                    "transactionId": "str"  # Required.
+                # response body for status code(s): 200
+                response == {
+                    "receipt": {
+                        "cert": "str",  # Optional.
+                        "leaf": "str",  # Optional.
+                        "leafComponents": {
+                            "claimsDigest": "str",  # Optional.
+                            "commitEvidence": "str",  # Optional.
+                            "writeSetDigest": "str"  # Optional.
+                        },
+                        "nodeId": "str",  # Required.
+                        "proof": [
+                            {
+                                "left": "str",  # Optional. Required.
+                                "right": "str"  # Optional. Required.
+                            }
+                        ],
+                        "root": "str",  # Optional.
+                        "serviceEndorsements": [
+                            "str"  # Optional.
+                        ],
+                        "signature": "str"  # Required.
+                    },
+                    "state": "str",  # State of a ledger query. Required. Known values are:
+                      "Loading" and "Ready".
+                    "transactionId": "str"  # A unique identifier for the state of the ledger. If
+                      returned as part of a LedgerEntry, it indicates the state from which the entry
+                      was read. Required.
                 }
         """
-
-    @overload
-    async def post_ledger_entry(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, body: Optional[IO] = None, *, content_type: str = "application/json", **kwargs: Any
-    ) -> None:
-        """Writes a ledger entry.
-
-        A collection id may optionally be specified.
-
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :param body: Default value is None.
-        :type body: IO
-        :keyword content_type: Body Parameter content-type. Content type parameter for binary body.
-         Default value is "application/json".
-        :paramtype content_type: str
-        :return: None
-        :rtype: None
-        :raises ~azure.core.exceptions.HttpResponseError:
-        """
-
-    @distributed_trace_async
-    async def post_ledger_entry(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, body: Optional[Union[JSON, IO]] = None, **kwargs: Any
-    ) -> None:
-        """Writes a ledger entry.
-
-        A collection id may optionally be specified.
-
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :param body: Is either a model type or a IO type. Default value is None.
-        :type body: JSON or IO
-        :keyword content_type: Body Parameter content-type. Known values are: 'application/json'.
-         Default value is None.
-        :paramtype content_type: str
-        :return: None
-        :rtype: None
-        :raises ~azure.core.exceptions.HttpResponseError:
-        """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
-        _headers = case_insensitive_dict(kwargs.pop("headers", {}) or {})
-        _params = kwargs.pop("params", {}) or {}
-
-        content_type = kwargs.pop("content_type", _headers.pop("Content-Type", None))  # type: Optional[str]
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
-
-        content_type = content_type or "application/json"
-        _json = None
-        _content = None
-        if isinstance(body, (IO, bytes)):
-            _content = body
-        else:
-            if body is not None:
-                _json = body
-            else:
-                _json = None
-
-        request = build_post_ledger_entry_request(
-            content_type=content_type,
-            api_version=self._config.api_version,
-            collection_id=self._config.collection_id,
-            json=_json,
-            content=_content,
-            headers=_headers,
-            params=_params,
-        )
-        path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
-        }
-        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
-
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
-
-        response = pipeline_response.http_response
-
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
-
-        if cls:
-            return cls(pipeline_response, None, {})
-
-    @distributed_trace_async
-    async def get_ledger_entry(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
-        """Gets the ledger entry at the specified transaction id. A collection id may optionally be
-        specified to indicate the collection from which to fetch the value.
-
-        Gets the ledger entry at the specified transaction id. A collection id may optionally be
-        specified to indicate the collection from which to fetch the value.
-
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
-        :raises ~azure.core.exceptions.HttpResponseError:
-        """
         error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
         error_map.update(kwargs.pop("error_map", {}) or {})
 
         _headers = kwargs.pop("headers", {}) or {}
         _params = kwargs.pop("params", {}) or {}
 
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
-
-        request = build_get_ledger_entry_request(
-            transaction_id=self._config.transaction_id,
-            collection_id=self._config.collection_id,
-            api_version=self._config.api_version,
-            headers=_headers,
-            params=_params,
-        )
-        path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
-        }
-        request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
-
-        pipeline_response = await self._client._pipeline.run(  # type: ignore # pylint: disable=protected-access
-            request, stream=False, **kwargs
-        )
-
-        response = pipeline_response.http_response
-
-        if response.status_code not in [200]:
-            map_error(status_code=response.status_code, response=response, error_map=error_map)
-            raise HttpResponseError(response=response)
-
-        if cls:
-            return cls(pipeline_response, None, {})
-
-    @distributed_trace_async
-    async def get_receipt(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
-        """Gets a receipt certifying ledger contents at a particular transaction id.
-
-        Gets a receipt certifying ledger contents at a particular transaction id.
-
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
-        :raises ~azure.core.exceptions.HttpResponseError:
-        """
-        error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
-        error_map.update(kwargs.pop("error_map", {}) or {})
-
-        _headers = kwargs.pop("headers", {}) or {}
-        _params = kwargs.pop("params", {}) or {}
-
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
         request = build_get_receipt_request(
-            transaction_id=self._config.transaction_id,
+            transaction_id=transaction_id,
             api_version=self._config.api_version,
             headers=_headers,
             params=_params,
         )
         path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
         }
         request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
 
@@ -454,22 +747,39 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
             map_error(status_code=response.status_code, response=response, error_map=error_map)
             raise HttpResponseError(response=response)
 
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
         if cls:
-            return cls(pipeline_response, None, {})
+            return cls(pipeline_response, cast(JSON, deserialized), {})
+
+        return cast(JSON, deserialized)
 
     @distributed_trace_async
-    async def get_transaction_status(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
+    async def get_transaction_status(self, transaction_id: str, **kwargs: Any) -> JSON:
         """Gets the status of an entry identified by a transaction id.
 
         Gets the status of an entry identified by a transaction id.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
+        :param transaction_id: Identifies a write transaction. Required.
+        :type transaction_id: str
+        :return: JSON object
+        :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "state": "str",  # Represents the state of the transaction. Required. Known
+                      values are: "Committed" and "Pending".
+                    "transactionId": "str"  # A unique identifier for the state of the ledger. If
+                      returned as part of a LedgerEntry, it indicates the state from which the entry
+                      was read. Required.
+                }
         """
         error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
         error_map.update(kwargs.pop("error_map", {}) or {})
@@ -477,16 +787,18 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
         _headers = kwargs.pop("headers", {}) or {}
         _params = kwargs.pop("params", {}) or {}
 
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
         request = build_get_transaction_status_request(
-            transaction_id=self._config.transaction_id,
+            transaction_id=transaction_id,
             api_version=self._config.api_version,
             headers=_headers,
             params=_params,
         )
         path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
         }
         request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
 
@@ -500,22 +812,39 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
             map_error(status_code=response.status_code, response=response, error_map=error_map)
             raise HttpResponseError(response=response)
 
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
         if cls:
-            return cls(pipeline_response, None, {})
+            return cls(pipeline_response, cast(JSON, deserialized), {})
+
+        return cast(JSON, deserialized)
 
     @distributed_trace_async
-    async def get_current_ledger_entry(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
+    async def get_current_ledger_entry(self, *, collection_id: Optional[str] = None, **kwargs: Any) -> JSON:
         """Gets the current value available in the ledger.
 
-        Gets the current value available in the ledger.
+        A collection id may optionally be specified.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
+        :keyword collection_id: The collection id. Default value is None.
+        :paramtype collection_id: str
+        :return: JSON object
+        :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "collectionId": "str",  # Optional.
+                    "contents": "str",  # Contents of the ledger entry. Required.
+                    "transactionId": "str"  # Optional. A unique identifier for the state of the
+                      ledger. If returned as part of a LedgerEntry, it indicates the state from which
+                      the entry was read.
+                }
         """
         error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
         error_map.update(kwargs.pop("error_map", {}) or {})
@@ -523,16 +852,18 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
         _headers = kwargs.pop("headers", {}) or {}
         _params = kwargs.pop("params", {}) or {}
 
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
         request = build_get_current_ledger_entry_request(
-            collection_id=self._config.collection_id,
+            collection_id=collection_id,
             api_version=self._config.api_version,
             headers=_headers,
             params=_params,
         )
         path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
         }
         request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
 
@@ -546,19 +877,24 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
             map_error(status_code=response.status_code, response=response, error_map=error_map)
             raise HttpResponseError(response=response)
 
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
         if cls:
-            return cls(pipeline_response, None, {})
+            return cls(pipeline_response, cast(JSON, deserialized), {})
+
+        return cast(JSON, deserialized)
 
     @distributed_trace_async
-    async def delete_user(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, **kwargs: Any
-    ) -> None:
+    async def delete_user(self, user_id: str, **kwargs: Any) -> None:  # pylint: disable=inconsistent-return-statements
         """Deletes a user from the Confidential Ledger.
 
         Deletes a user from the Confidential Ledger.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
+        :param user_id: The user id, either an AAD object ID or certificate fingerprint. Required.
+        :type user_id: str
         :return: None
         :rtype: None
         :raises ~azure.core.exceptions.HttpResponseError:
@@ -572,13 +908,15 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
         cls = kwargs.pop("cls", None)  # type: ClsType[None]
 
         request = build_delete_user_request(
-            user_id=self._config.user_id,
+            user_id=user_id,
             api_version=self._config.api_version,
             headers=_headers,
             params=_params,
         )
         path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
         }
         request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
 
@@ -596,16 +934,27 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
             return cls(pipeline_response, None, {})
 
     @distributed_trace_async
-    async def get_user(self, ledger_uri: str, **kwargs: Any) -> None:  # pylint: disable=inconsistent-return-statements
+    async def get_user(self, user_id: str, **kwargs: Any) -> JSON:
         """Gets a user.
 
         Gets a user.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :return: None
-        :rtype: None
+        :param user_id: The user id, either an AAD object ID or certificate fingerprint. Required.
+        :type user_id: str
+        :return: JSON object
+        :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "assignedRole": "str",  # Represents an assignable role. Required. Known
+                      values are: "Administrator", "Contributor", and "Reader".
+                    "userId": "str"  # Optional. Identifier for the user. This must either be an
+                      AAD object id or a certificate fingerprint.
+                }
         """
         error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
         error_map.update(kwargs.pop("error_map", {}) or {})
@@ -613,16 +962,18 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
         _headers = kwargs.pop("headers", {}) or {}
         _params = kwargs.pop("params", {}) or {}
 
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
         request = build_get_user_request(
-            user_id=self._config.user_id,
+            user_id=user_id,
             api_version=self._config.api_version,
             headers=_headers,
             params=_params,
         )
         path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
         }
         request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
 
@@ -636,88 +987,114 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
             map_error(status_code=response.status_code, response=response, error_map=error_map)
             raise HttpResponseError(response=response)
 
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
         if cls:
-            return cls(pipeline_response, None, {})
+            return cls(pipeline_response, cast(JSON, deserialized), {})
+
+        return cast(JSON, deserialized)
 
     @overload
-    async def create_or_update_user(  # pylint: disable=inconsistent-return-statements
-        self,
-        ledger_uri: str,
-        body: Optional[JSON] = None,
-        *,
-        content_type: str = "application/merge-patch+json",
-        **kwargs: Any
-    ) -> None:
+    async def create_or_update_user(
+        self, user_id: str, user_details: JSON, *, content_type: str = "application/merge-patch+json", **kwargs: Any
+    ) -> JSON:
         """Adds a user or updates a user's fields.
 
-        Adds a user or updates a user's fields.
+        A JSON merge patch is applied for existing users.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :param body: Details about a Confidential Ledger user. Default value is None.
-        :type body: JSON
+        :param user_id: The user id, either an AAD object ID or certificate fingerprint. Required.
+        :type user_id: str
+        :param user_details: Details about a Confidential Ledger user. Required.
+        :type user_details: JSON
         :keyword content_type: Body Parameter content-type. Content type parameter for JSON body.
          Default value is "application/merge-patch+json".
         :paramtype content_type: str
-        :return: None
-        :rtype: None
+        :return: JSON object
+        :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
 
         Example:
             .. code-block:: python
 
                 # JSON input template you can fill out and use as your body input.
-                body = {
+                user_details = {
                     "assignedRole": "str",  # Represents an assignable role. Required. Known
                       values are: "Administrator", "Contributor", and "Reader".
-                    "userId": "str"  # Required.
+                    "userId": "str"  # Optional. Identifier for the user. This must either be an
+                      AAD object id or a certificate fingerprint.
+                }
+
+                # response body for status code(s): 200
+                response == {
+                    "assignedRole": "str",  # Represents an assignable role. Required. Known
+                      values are: "Administrator", "Contributor", and "Reader".
+                    "userId": "str"  # Optional. Identifier for the user. This must either be an
+                      AAD object id or a certificate fingerprint.
                 }
         """
 
     @overload
-    async def create_or_update_user(  # pylint: disable=inconsistent-return-statements
-        self,
-        ledger_uri: str,
-        body: Optional[IO] = None,
-        *,
-        content_type: str = "application/merge-patch+json",
-        **kwargs: Any
-    ) -> None:
+    async def create_or_update_user(
+        self, user_id: str, user_details: IO, *, content_type: str = "application/merge-patch+json", **kwargs: Any
+    ) -> JSON:
         """Adds a user or updates a user's fields.
 
-        Adds a user or updates a user's fields.
+        A JSON merge patch is applied for existing users.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :param body: Details about a Confidential Ledger user. Default value is None.
-        :type body: IO
+        :param user_id: The user id, either an AAD object ID or certificate fingerprint. Required.
+        :type user_id: str
+        :param user_details: Details about a Confidential Ledger user. Required.
+        :type user_details: IO
         :keyword content_type: Body Parameter content-type. Content type parameter for binary body.
          Default value is "application/merge-patch+json".
         :paramtype content_type: str
-        :return: None
-        :rtype: None
+        :return: JSON object
+        :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "assignedRole": "str",  # Represents an assignable role. Required. Known
+                      values are: "Administrator", "Contributor", and "Reader".
+                    "userId": "str"  # Optional. Identifier for the user. This must either be an
+                      AAD object id or a certificate fingerprint.
+                }
         """
 
     @distributed_trace_async
-    async def create_or_update_user(  # pylint: disable=inconsistent-return-statements
-        self, ledger_uri: str, body: Optional[Union[JSON, IO]] = None, **kwargs: Any
-    ) -> None:
+    async def create_or_update_user(self, user_id: str, user_details: Union[JSON, IO], **kwargs: Any) -> JSON:
         """Adds a user or updates a user's fields.
 
-        Adds a user or updates a user's fields.
+        A JSON merge patch is applied for existing users.
 
-        :param ledger_uri: ledgerUri - server parameter. Required.
-        :type ledger_uri: str
-        :param body: Details about a Confidential Ledger user. Is either a model type or a IO type.
-         Default value is None.
-        :type body: JSON or IO
+        :param user_id: The user id, either an AAD object ID or certificate fingerprint. Required.
+        :type user_id: str
+        :param user_details: Details about a Confidential Ledger user. Is either a model type or a IO
+         type. Required.
+        :type user_details: JSON or IO
         :keyword content_type: Body Parameter content-type. Known values are:
          'application/merge-patch+json'. Default value is None.
         :paramtype content_type: str
-        :return: None
-        :rtype: None
+        :return: JSON object
+        :rtype: JSON
         :raises ~azure.core.exceptions.HttpResponseError:
+
+        Example:
+            .. code-block:: python
+
+                # response body for status code(s): 200
+                response == {
+                    "assignedRole": "str",  # Represents an assignable role. Required. Known
+                      values are: "Administrator", "Contributor", and "Reader".
+                    "userId": "str"  # Optional. Identifier for the user. This must either be an
+                      AAD object id or a certificate fingerprint.
+                }
         """
         error_map = {401: ClientAuthenticationError, 404: ResourceNotFoundError, 409: ResourceExistsError}
         error_map.update(kwargs.pop("error_map", {}) or {})
@@ -726,21 +1103,18 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
         _params = kwargs.pop("params", {}) or {}
 
         content_type = kwargs.pop("content_type", _headers.pop("Content-Type", None))  # type: Optional[str]
-        cls = kwargs.pop("cls", None)  # type: ClsType[None]
+        cls = kwargs.pop("cls", None)  # type: ClsType[JSON]
 
         content_type = content_type or "application/merge-patch+json"
         _json = None
         _content = None
-        if isinstance(body, (IO, bytes)):
-            _content = body
+        if isinstance(user_details, (IO, bytes)):
+            _content = user_details
         else:
-            if body is not None:
-                _json = body
-            else:
-                _json = None
+            _json = user_details
 
         request = build_create_or_update_user_request(
-            user_id=self._config.user_id,
+            user_id=user_id,
             content_type=content_type,
             api_version=self._config.api_version,
             json=_json,
@@ -749,7 +1123,9 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
             params=_params,
         )
         path_format_arguments = {
-            "ledgerUri": self._serialize.url("ledger_uri", ledger_uri, "str"),
+            "ledgerEndpoint": self._serialize.url(
+                "self._config.ledger_endpoint", self._config.ledger_endpoint, "str", skip_quote=True
+            ),
         }
         request.url = self._client.format_url(request.url, **path_format_arguments)  # type: ignore
 
@@ -763,5 +1139,12 @@ class ConfidentialLedgerClientOperationsMixin(MixinABC):
             map_error(status_code=response.status_code, response=response, error_map=error_map)
             raise HttpResponseError(response=response)
 
+        if response.content:
+            deserialized = response.json()
+        else:
+            deserialized = None
+
         if cls:
-            return cls(pipeline_response, None, {})
+            return cls(pipeline_response, cast(JSON, deserialized), {})
+
+        return cast(JSON, deserialized)
