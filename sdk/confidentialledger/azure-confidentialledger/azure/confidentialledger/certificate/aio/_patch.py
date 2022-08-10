@@ -43,4 +43,4 @@ class ConfidentialLedgerCertificateClient(GeneratedClient):
         if not certificate_endpoint:
             certificate_endpoint = "https://identity.confidential-ledger.core.azure.com"
 
-        super().__init__(certificate_endpoint, **kwargs)
+        super().__init__(endpoint=certificate_endpoint, **kwargs)
